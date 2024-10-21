@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import math
+import time # just for reference as high values of t (over 30?) are a bit slow
+# there is a faster (but longer) version in case, but it is overkill for t=20
+
+'''
+NEW: Extremal function for K20 minors down from 59 to 55 with the following
+improvement: as mentioned last week (Aug 3 meeting), in the second step of the
+method, we can contract individual vertices instead of the entire component,
+and a very similar logic holds. The proof that smaller components are
+necessarily better no longer holds, but we can increase the minimum value of k
+by the method of contracting individual vertices before switching to the method
+of contracting an entire component (only for the purpose of saving
+computational time). Note that 56 was mentioned last meeting with hope for 55,
+and 55 is now confirmed.
+
+The new step is roughly as follows: after contracting a minimum degree vertex,
+we can repeat the same step of using the extremal function to upper bound the
+minimum degree vertex in the component *after* all previous contractions.
+Similarly to before, this gives a lower bound for the # of neighbours inside
+N(v), with a bit of extra care to account for the fact that this vertex may
+have been adjacent to the already-contracted vertices. Essentially, delta is
+treated as delta - (# of already-contracted vertices). Contracting multiple
+vertices in this manner solves many middle-range values of k (# of components).
+                                                              
+Also note that this is a simple change to the code and should not take long to
+write up in the future.
+'''
+
+start = time.time()
+
+TEST = 120
+
+'''
+The test variable is for convenience. This is the maximum n for which extremal
+function values are stored, so make sure to set it to at least twice the
+value of the last constant you're trying to find. 150 is more than enough for
+t=20, it should be somewhere around 450 for t=40, and somewhere around 600 for
+t=50. You will get an IndexError if you set it too low, and it might be
+unnecessarily slow if you set it too high.
+'''
+
+def extra_edges(t, m, d, delta, exfns):   
+    # finding upper bound for min deg by ruling out K(t-1) minor on n vertices
+    # t, d as usual, m = |M_i|, delta = delta(G) = d(v)
+    
+    if m < t:
+        return 0
+    
+    mindeg = m-1 # mindeg is minimum degree in M_i, not entire graph
+    while math.ceil(mindeg * m / 2) >= exfns[t-1][m]:
+        mindeg -= 1
+    # upper bound the minimum degree by t-1 extremal function values
+        
+    if math.ceil(((m-1) * (d-(delta-m)) - mindeg) / 2) >= exfns[t-2][m-1]:
+        return math.inf # Kt minor found by means of K(t-2) minor
+    
+        '''
+        Specifically, we contract J_i onto the minimum degree vertex in M_i
+        and see if there is necessarily a K_(t-2) minor on the remaining
+        vertices. Min deg in N(v) is at least d, so removing 1 for the mindeg
+        vertices that are adjacent to the contracted vertex, then removing a
+        further delta-n for every vertex (since there could be edges in N(v)
+        but outside M_i), we get a lower bound for the number of edges on these
+        m-1 vertices.
+        '''
+    
+    '''
+    The above optimization is missing from the current written method, but
+    it is easy to show. (It is not new, just forgot to write it in.) The idea
+    here is that, after contracting a component onto one vertex, we should
+    expect that having a complete vertex makes it more likely to find a t-1
+    minor than just using the general extremal function. "Infinite" edges is
+    just a way to compute that we definitely meet the needed number of extra
+    edges, since we directly found the desired minor.
+    This results in a small but noticeable improvement: e.g. K20 would be 60
+    instead of 59 without making this check.
+    '''
+        
+    return m - 1 - mindeg
+
+def deg_inside(t, j, delta, exfns):
+    # "inside" meaning inside N(v)
+    # t from Kt, j = |J_i| = component size, delta = delta(G) = d(v)
+    # this one is fairly straightforward, upper bd deg in comp
+    # to lower bd deg in N(v)
+    
+    degincomp = delta
+    while math.ceil(degincomp * j / 2) >= exfns[t][j]:
+        degincomp -= 1    
+    return delta - degincomp
+
+def short_success(n, ct, needed, prev, conversions):
+    # this is just checking possible sums, most of the work done in success
+    
+    if needed <= 0:
+        return True
+    
+    if ct == 1:
+        return conversions[n] >= needed
+    
+    for i in range(prev, n//ct + 1):
+        if not short_success(n-i, ct-1, needed-conversions[i], i, conversions):
+            return False
+        
+    return True
+
+def success(t, n, d, delta, needed, exfns):
+    
+    nbrdconversions = [0] * t + [extra_edges(t, m, d, delta, exfns) for m in range(t, delta+1)]
+    # for small k
+
+    compconversions1 = [nbrdconversions[deg_inside(t, j, delta, exfns)] for j in range(n-delta)]
+    # for minimum k after first process EDIT: after first two processes
+    
+    
+    # THE FOLLOWING NEEDS TO BE BETTER DOCUMENTED (idea: compconversions2 for
+    # multiple contracted vertices per comp, conversions1 for one per comp)
+    compconversions2 = [math.inf] # dummy value, never actually used
+    
+    for j in range(1, n-delta):
+        answer = 0
+        for i in range(j):
+            compsize = j-i
+            answer += nbrdconversions[deg_inside(t, compsize, delta-i, exfns)]
+            # need to document why this is never negative
+        compconversions2.append(answer)
+    
+    coverage = delta # calculating |M|
+    while math.ceil((coverage-1) * (d-(delta-coverage)-1) / 2) < exfns[t-(delta-coverage)-2][coverage - 1]:
+        # if condition triggered, a lower value of |M| is still possible
+        coverage -= 1
+        
+    k = 1 # min components
+    
+    while short_success(coverage, k, needed, 1, nbrdconversions):
+        k += 1
+        
+    # DOCUMENT (idea: if one vertex per component good enough, terminate,
+    # otherwise, try multiple vertices per comp and increase k if successful)
+    while not short_success(n-delta-1, k, needed, 1, compconversions1):
+        if short_success(n-delta-1, k, needed, 1, compconversions2):
+            k += 1
+        else:
+            return False  
+    return True
+
+exfns = [] # the actual full table, access by exfns[t][n]
+
+exfns = []
+
+exfns.append([0] * (TEST + 1)) # K0, not really applicable / dummy value
+
+exfns.append([1] + [0] * TEST) # K1
+
+exfns.append([1] * (TEST + 1)) # K2
+
+for t in range(3, 8): # K3 to K7 inclusive, Mader's bounds
+    
+    temp = []
+    for n in range(t):
+        temp.append(n*(n-1)//2 + 1) # 1 more than possible for n < t
+    exfns.append(temp + [t*(t-1)//2]) # exactly nC2 for n = t
+    
+    for _ in range(TEST-t):
+        exfns[t].append(exfns[t][-1] + t - 2) # (t-2) constant
+        
+for t in range(8, 10): # K8 and K9, Jorgensen and Song
+    
+    temp = []
+    for n in range(t):
+        temp.append(n*(n-1)//2 + 1)
+    exfns.append(temp + [t*(t-1)//2 + 1])
+    # same as for 3-7 but +1, not tight for n = t
+    
+    for _ in range(TEST-t):
+        exfns[t].append(exfns[t][-1] + t - 2)
+        
+# delete the triple quotes on lines 184 and 205 to use the K10/11 values
+# derived from Song's thesis
+     
+'''
+temp = [] # K10, Song's unpublished 11n - 65 bound
+for n in range(10):
+    temp.append(n*(n-1)//2 + 1)
+exfns.append(temp + [45]) # 10C2 = 45
+for _ in range(TEST-10):
+    exfns[10].append(exfns[10][-1] + 11)
+# there might actually be some verifying to do to make sure this holds, as we
+# focused more on K11
+    
+temp = [] # K11
+for j in range(11):
+    temp.append(j*(j-1)//2 + 1)
+exfns.append(temp + [55]) # 11C2 = 55
+exfns[11].extend([64, 74, 85, 94, 103, 114, 125])
+for _ in range(13):
+    exfns[11].append(exfns[11][-1] + 12)
+for _ in range(TEST-31):
+    exfns[11].append(exfns[11][-1] + 13)
+# the values for K11 are from the work earlier, Song's lemmas' inequalities and
+# the optimal values for 11 <= n <= 16
+'''
+
+excs = [0, 0, 0, 1, 2, 3, 4, 5, 6, 7]
+# important: add 11 and 13 if you want to use those values, or everything
+# will be shifted
+
+failed_cases = [None]*10 # change to 12 if you include above results for K10/11
+# access by t, stored as a list of (n, attempted d, failed delta) tuples
+
+for t in range(10, 21):
+    # change 10 to 12 if the earlier part is included, change second value to
+    # last value you want + 1 (if it is 21, 20 will be the last value found)
+    
+    c = 8 # actual constant we're looking for, 8 low enough by conjecture
+    while math.ceil(c * (2*c-1) / 2) < exfns[t-1][2*c-1]:
+        c += 1
+    excs.append(c)
+    # print(str(t) + ':', c, '(' + str(math.ceil(time.time()-start)), 'seconds so far)')
+    
+    temp = []
+    for i in range(t):
+        temp.append(i*(i-1)//2 + 1)
+    exfns.append(temp[:])
+    n = t
+    
+    # the exact values of n:
+    
+    d = t-2 # by conjecture, could start lower but same results
+    # no need to prove since this would at worst get valid but worse results
+    
+    failed_cases.append([])
+        
+    while n <= TEST:
+
+        if d == c: # we're not doing any better at this point
+            exfns[t].append(exfns[t][n-1] + c)
+            n += 1
+            continue
+        
+        deltalow = d+2
+        # could start lower, would be the same answer since mindeg d+1 implies that
+        # N[v] is complete graph on >= i vertices, so would just be waste of time
+        # (for even lower, contradictory min deg would also meet the exfns values)
+        while math.ceil(deltalow * d / 2) >= exfns[t-1][deltalow]:
+            deltalow += 1
+            
+        deltahigh = (2*(exfns[t][n-1] + d)) // n
+        
+        failed = False
+            
+        for delta in range(deltahigh, deltalow-1, -1):
+            
+            # not proven, but as a tendency, higher min deg tends to fail so
+            # we go in backwards order to save time in failing cases
+            # (there was no case where deltahigh passed and lower delta failed)
+            
+            needed = exfns[t-1][delta] - math.ceil(delta * d / 2)
+            
+            if not success(t, n, d, delta, needed, exfns):
+                failed = True
+                break
+            
+        if failed:
+            failed_cases[t].append((n, d, delta))
+            d += 1
+        else:
+            exfns[t].append(exfns[t][n-1] + d)
+            n += 1
+ 
+'''
+In general, it is useful to use a Python shell environment to inspect
+whichever variables you want as you see fit, but you can also just add
+print (thing you want), e.g. print(excs) for the main answers.
+'''
+
+print('Time taken:', time.time() - start, 'seconds')
+
+coloring = [0, 0, 1, 2, 3, 4, 5, 8, 10, 12] # chromatic number upper bound
+for t in range(10, len(excs)):
+    alpha = 1
+    chromatic = 2*excs[t]
+    best = False # just from thm 4.3 bound
+    while not best:
+        chromatic -= 1
+        alpha += 1
+        for j in range(1, alpha):
+            if t-1 > (2*excs[t]-j) / (2*(alpha-j+1) - 1):
+                best = True
+                break
+    coloring.append(chromatic)
+    
+known = [0, 0, 0, 1, 2, 3, 4, 5, 6, 7] # rest just using Kostochka bound
+for t in range(10, len(excs)):
+    known.append(int(6.3/2 * t * math.sqrt(math.log(t))))
